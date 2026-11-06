@@ -2,20 +2,21 @@ IP-KVM lets you see and control the machines behind your IP-KVM devices from Ter
 
 ## Supported KVMs
 
-| Type                   | Screen and keys                            | Power                        | Virtual media                             |
-| ---------------------- | ------------------------------------------ | ---------------------------- | ----------------------------------------- |
-| PiKVM                  | Through Termix (MJPEG video, HID socket)   | ATX on, off, hard off, reset | Mount images, download from a web address |
-| NanoKVM, GL.iNet Comet | Through Termix (MJPEG video, HID socket)   | Power button and reset       | Mount images already on the device        |
-| JetKVM                 | Direct WebRTC from your browser to the KVM | Through the screen toolbar   | Not yet                                   |
+| Type                  | Screen and keys                            | Power                        | Virtual media                             |
+| --------------------- | ------------------------------------------ | ---------------------------- | ----------------------------------------- |
+| PiKVM                 | Through Termix (MJPEG video, HID socket)   | ATX on, off, hard off, reset | Mount images, download from a web address |
+| GL.iNet Comet (GLKVM) | Through Termix (MJPEG video, HID socket)   | ATX on, off, hard off, reset | Mount images, download from a web address |
+| NanoKVM               | Through Termix (MJPEG video, HID socket)   | Power button and reset       | Mount images already on the device        |
+| JetKVM                | Direct WebRTC from your browser to the KVM | Through the screen toolbar   | Not yet                                   |
 
-The PiKVM, NanoKVM and JetKVM drivers were written from each project's public API and have only been tested against fake devices so far. If one does not work on your hardware, please open an issue with the model and software version.
+The GL.iNet Comet runs PiKVM's software with a fixed admin user, so it only asks for the password. The PiKVM, NanoKVM and JetKVM drivers were written from each project's public API and have only been tested against fake devices so far. If one does not work on your hardware, please open an issue with the model and software version.
 
 ## Add a KVM
 
 1. Open the KVM tab from the sidebar and press Add KVM.
 2. Pick the type, give it a name and enter the KVM address.
 3. Optionally pick the Termix host the machine belongs to. The KVM then follows that host's sharing and shows in its host menu.
-4. Enter the username and password and press Test connection.
+4. Enter the login and press Test connection. A KVM with its own self signed certificate needs Trust this certificate first: Termix shows the certificate's fingerprint, and once you trust it, only talks to the KVM while it shows that exact certificate.
 5. Optionally fill in the MAC address of the machine to use Wake-on-LAN.
 6. Save. Termix checks the KVM right away and then every minute, or whatever you set.
 

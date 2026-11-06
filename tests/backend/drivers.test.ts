@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { createKeyboard } from "../../src/shared/hid.js";
 import { createMjpegParser } from "../../src/backend/drivers/mjpeg.js";
-import { pikvm } from "../../src/backend/drivers/pikvm.js";
+import { glkvm, pikvm } from "../../src/backend/drivers/pikvm.js";
+import { normalizePin, PIN } from "../../src/backend/pinned.js";
 import { encryptPassword, nanokvm } from "../../src/backend/drivers/nanokvm.js";
 import { jetkvm, relaySession } from "../../src/backend/drivers/jetkvm.js";
 import type {
@@ -372,5 +373,91 @@ describe("jetkvm", () => {
         io,
       ),
     ).rejects.toThrow(/not been set up/);
+  });
+});
+
+describe("glkvm", () => {
+  const pin = Array.from({ length: 32 }, () => "AB").join(":");
+
+  it("asks only for the password and logs in as admin", async () => {
+    expect(glkvm.info.fields.map((field) => field.key)).toEqual(["password"]);
+    const seen: Array<Record<string, string> | undefined> = [];
+    const io: DriverIo = {
+      fetch: fakeFetch((url, init) => {
+        seen.push(init.headers);
+        return url.pathname === "/api/info"
+          ? json({ result: { hw: { platform: { model: "rm1" } } } })
+          : json({ result: {} });
+      }) as never,
+      connect: () => new FakeSocket(),
+    };
+    const reading = await glkvm.read(
+      target({ credentials: { password: "secret" } }),
+      io,
+    );
+    expect(reading.model).toBe("rm1");
+    expect(seen[0]?.["x-kvmd-user"]).toBe("admin");
+    expect(seen[0]?.["x-kvmd-passwd"]).toBe("secret");
+  });
+
+  it("goes through the pinned fetch when a certificate is pinned", async () => {
+    const fetch = vi.fn();
+    const fetchPinned = vi.fn(async (url: string, _pin: string) =>
+      new URL(url).pathname === "/api/info"
+        ? Response.json({ result: { hw: { platform: { model: "rm1" } } } })
+        : Response.json({ result: {} }),
+    );
+    await glkvm.read(target({ options: { pin } }), {
+      fetch: fetch as never,
+      fetchPinned,
+      connect: () => new FakeSocket(),
+    });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(fetchPinned.mock.calls[0][1]).toBe(pin);
+  });
+
+  it("reports power as unknown without an ATX board", async () => {
+    const reading = await glkvm.read(
+      target({ credentials: { password: "x" } }),
+      {
+        fetch: fakeFetch((url) =>
+          url.pathname === "/api/atx"
+            ? json({ result: { enabled: false, leds: { power: false } } })
+            : json({ result: {} }),
+        ) as never,
+        connect: () => new FakeSocket(),
+      },
+    );
+    expect(reading.power).toBe("unknown");
+  });
+
+  it("takes a snapshot once the streamer starts", async () => {
+    let calls = 0;
+    const sockets: FakeSocket[] = [];
+    const jpeg = await glkvm.snapshot!(
+      target({ credentials: { password: "x" } }),
+      {
+        fetch: fakeFetch((url) => {
+          if (url.pathname !== "/streamer/snapshot") return status(404);
+          calls += 1;
+          return calls === 1
+            ? status(502)
+            : new Response(new Uint8Array(JPEG_A), { status: 200 });
+        }) as never,
+        connect: () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+      },
+    );
+    expect(Buffer.compare(jpeg, JPEG_A)).toBe(0);
+    expect(calls).toBe(2);
+    expect(sockets[0].closed).toBe(true);
+  });
+
+  it("checks pins", () => {
+    expect(PIN.test(normalizePin(pin.toLowerCase()))).toBe(true);
+    expect(PIN.test("AB:CD")).toBe(false);
   });
 });

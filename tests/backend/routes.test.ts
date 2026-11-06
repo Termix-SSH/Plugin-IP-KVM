@@ -161,7 +161,7 @@ describe("devices", () => {
     const result = await request("GET", "/drivers");
     expect(
       (result.body as any).drivers.map((d: { id: string }) => d.id).sort(),
-    ).toEqual(["jetkvm", "nanokvm", "pikvm"]);
+    ).toEqual(["glkvm", "jetkvm", "nanokvm", "pikvm"]);
   });
 
   it("adds a KVM and never shows or stores the login in plain text", async () => {

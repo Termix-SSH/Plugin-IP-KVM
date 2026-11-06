@@ -54,7 +54,8 @@ async function call(
 }
 
 async function read(target: Target, io: DriverIo): Promise<Reading> {
-  const info = await call(target, io, "/api/info?fields=system,hw,meta");
+  // No fields filter: kvmd on a GL.iNet Comet has no hw section and refuses it.
+  const info = await call(target, io, "/api/info");
   // These two are optional on a PiKVM without ATX or a video capture
   const [atx, streamer] = await Promise.all([
     call(target, io, "/api/atx").catch((): Record<string, unknown> => ({})),
@@ -73,7 +74,13 @@ async function read(target: Target, io: DriverIo): Promise<Reading> {
     model: str(platform.model) || str(platform.base) || "PiKVM",
     version: str(system.version) || undefined,
     hostname: str(meta.host) || undefined,
-    power: typeof led === "boolean" ? (led ? "on" : "off") : "unknown",
+    // No ATX board means the LED tells nothing about the machine.
+    power:
+      atx.enabled !== false && typeof led === "boolean"
+        ? led
+          ? "on"
+          : "off"
+        : "unknown",
     width: num(resolution.width),
     height: num(resolution.height),
     signal: typeof source.online === "boolean" ? source.online : undefined,
@@ -86,23 +93,92 @@ async function power(target: Target, io: DriverIo, action: PowerAction) {
   });
 }
 
+const SNAPSHOT_GAP_MS = 150;
+const STREAMER_WAIT_MS = 15_000;
+
+/**
+ * Video as back to back JPEG snapshots. A GL.iNet Comet only streams H.264,
+ * but serves snapshots while a kvmd socket is open (kvmd starts the streamer
+ * for socket clients, so the first ones answer 502 for a moment).
+ */
+function openSnapshots(
+  target: Target,
+  io: DriverIo,
+  onFrame: (jpeg: Buffer) => void,
+  onEnd: (reason?: string) => void,
+): { close: () => void } {
+  let closed = false;
+  void (async () => {
+    let waitingSince = Date.now();
+    while (!closed) {
+      const started = Date.now();
+      try {
+        const response = await send(
+          target,
+          io,
+          `${baseUrl(target)}/streamer/snapshot`,
+          { headers: headers(target) },
+        );
+        if (response.ok) {
+          const jpeg = Buffer.from(await response.arrayBuffer());
+          if (!closed) onFrame(jpeg);
+          waitingSince = Date.now();
+        } else {
+          await response.body?.cancel().catch(() => {});
+          if (Date.now() - waitingSince > STREAMER_WAIT_MS) {
+            throw new DriverError(describeStatus(response.status));
+          }
+        }
+      } catch (error) {
+        if (!closed) {
+          onEnd(error instanceof Error ? error.message : String(error));
+        }
+        return;
+      }
+      const rest = SNAPSHOT_GAP_MS - (Date.now() - started);
+      if (rest > 0) await new Promise((done) => setTimeout(done, rest));
+    }
+  })();
+  return {
+    close() {
+      closed = true;
+    },
+  };
+}
+
 async function screen(
   target: Target,
   io: DriverIo,
   handlers: ScreenHandlers,
+  video: "mjpeg" | "snapshots" = "mjpeg",
 ): Promise<ScreenSession> {
-  const video = await openMjpeg(
-    target,
-    io,
-    `${baseUrl(target)}/streamer/stream`,
-    headers(target),
-    handlers.onFrame,
-    handlers.onClose,
-  );
+  // The socket comes first: it is what starts the streamer on kvmd.
   const socket = io.connect(socketUrl(target, "/api/ws"), {
     headers: headers(target),
     ca: target.ca,
+    pin: target.options.pin,
   });
+  let stream: { close: () => void };
+  try {
+    stream =
+      video === "snapshots"
+        ? openSnapshots(target, io, handlers.onFrame, handlers.onClose)
+        : await openMjpeg(
+            target,
+            io,
+            `${baseUrl(target)}/streamer/stream`,
+            headers(target),
+            handlers.onFrame,
+            handlers.onClose,
+          );
+  } catch (error) {
+    try {
+      socket.close();
+    } catch {
+      // already closed
+    }
+    throw error;
+  }
   let open = false;
   const queue: string[] = [];
   const write = (event: unknown) => {
@@ -160,7 +236,7 @@ async function screen(
       }
     },
     close() {
-      video.close();
+      stream.close();
       try {
         socket.close();
       } catch {
@@ -192,7 +268,7 @@ async function mediaList(target: Target, io: DriverIo): Promise<MediaState> {
   };
 }
 
-export const pikvm: Driver = {
+const pikvmDriver: Driver = {
   info: {
     id: "pikvm",
     defaultPort: 443,
@@ -258,4 +334,57 @@ export const pikvm: Driver = {
       );
     },
   },
+};
+
+export const pikvm = pikvmDriver;
+
+/**
+ * GL.iNet Comet runs PiKVM's kvmd with a fixed admin user, so only the
+ * password is asked for.
+ */
+export const glkvm: Driver = {
+  ...pikvmDriver,
+  info: {
+    ...pikvmDriver.info,
+    id: "glkvm",
+    fields: [{ key: "password", type: "secret", required: true }],
+  },
+  async read(target, io) {
+    const reading = await pikvmDriver.read(target, io);
+    return {
+      ...reading,
+      model: reading.model === "PiKVM" ? "GL.iNet Comet" : reading.model,
+    };
+  },
+  screen: (target, io, handlers) => screen(target, io, handlers, "snapshots"),
+  snapshot: (target, io) =>
+    new Promise<Buffer>((resolve, reject) => {
+      let session: ScreenSession | null = null;
+      let done = false;
+      const finish = (frame: Buffer | null, reason?: string) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        session?.close();
+        if (frame) resolve(frame);
+        else reject(new DriverError(reason ?? "No picture from the KVM"));
+      };
+      const timer = setTimeout(() => finish(null), 20_000);
+      screen(
+        target,
+        io,
+        {
+          onFrame: (jpeg) => finish(jpeg),
+          onClose: (reason) => finish(null, reason),
+        },
+        "snapshots",
+      )
+        .then((opened) => {
+          session = opened;
+          if (done) opened.close();
+        })
+        .catch((error: unknown) =>
+          finish(null, error instanceof Error ? error.message : String(error)),
+        );
+    }),
 };
