@@ -177,15 +177,40 @@
   },
   "operations": {
     "device": "KVM",
-    "list-devices": { "title": "List KVMs" },
-    "poll": { "title": "Read a KVM now" },
-    "power-state": { "title": "Get power state" },
-    "power-on": { "title": "Power on" },
-    "graceful-shutdown": { "title": "Shut down" },
-    "power-off": { "title": "Power off" },
-    "reset": { "title": "Reset" },
-    "wake": { "title": "Wake on LAN" },
-    "eject-media": { "title": "Eject image" },
-    "health": { "title": "KVM status" }
+    "list-devices": {
+      "title": "List KVMs"
+    },
+    "poll": {
+      "title": "Read a KVM now"
+    },
+    "power-state": {
+      "title": "Get power state"
+    },
+    "power-on": {
+      "title": "Power on"
+    },
+    "graceful-shutdown": {
+      "title": "Shut down"
+    },
+    "power-off": {
+      "title": "Power off"
+    },
+    "reset": {
+      "title": "Reset"
+    },
+    "wake": {
+      "title": "Wake on LAN"
+    },
+    "eject-media": {
+      "title": "Eject image"
+    },
+    "health": {
+      "title": "KVM status"
+    }
+  },
+  "widget": {
+    "name": "KVM devices",
+    "description": "Which of your IP-KVMs are up.",
+    "summary": "{{up}} of {{total}} up"
   }
 }

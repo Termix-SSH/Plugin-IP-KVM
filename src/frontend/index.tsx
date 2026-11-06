@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { kvmWidget } from "./HomepageWidget";
 import { MonitorSmartphone, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -255,6 +256,8 @@ export function activate(app: TermixApp): void {
     singleton: true,
     hostless: true,
   });
+  app.registerExtension("homepage.widgets", kvmWidget(app.t));
+
   app.registerDashboardCard({
     id: "ip-kvm",
     titleKey: "card.title",
