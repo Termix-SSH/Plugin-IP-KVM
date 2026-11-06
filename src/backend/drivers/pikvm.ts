@@ -146,12 +146,40 @@ function openSnapshots(
   };
 }
 
+// kvmd 4.x only takes binary HID messages on /api/ws, the JSON ones are ignored
+function hidFrame(type: number, down: boolean, name: string): Buffer {
+  return Buffer.concat([
+    Buffer.from([type, down ? 1 : 0]),
+    Buffer.from(name, "ascii"),
+  ]);
+}
+
+function moveFrame(x: number, y: number): Buffer {
+  const frame = Buffer.alloc(5);
+  frame[0] = 3;
+  frame.writeInt16BE(Math.round(Math.min(1, Math.max(0, x)) * ABS - 32768), 1);
+  frame.writeInt16BE(Math.round(Math.min(1, Math.max(0, y)) * ABS - 32768), 3);
+  return frame;
+}
+
+/** Termix sends absolute pointer positions, which kvmd drops in relative mode. */
+async function useAbsoluteMouse(target: Target, io: DriverIo): Promise<void> {
+  const mouse = obj((await call(target, io, "/api/hid")).mouse);
+  const outputs = obj(mouse.outputs);
+  const available = Array.isArray(outputs.available) ? outputs.available : [];
+  if (mouse.absolute !== false || !available.includes("usb")) return;
+  await call(target, io, "/api/hid/set_params?mouse_output=usb", {
+    method: "POST",
+  });
+}
+
 async function screen(
   target: Target,
   io: DriverIo,
   handlers: ScreenHandlers,
   video: "mjpeg" | "snapshots" = "mjpeg",
 ): Promise<ScreenSession> {
+  void useAbsoluteMouse(target, io).catch(() => {});
   // The socket comes first: it is what starts the streamer on kvmd.
   const socket = io.connect(socketUrl(target, "/api/ws"), {
     headers: headers(target),
@@ -180,15 +208,14 @@ async function screen(
     throw error;
   }
   let open = false;
-  const queue: string[] = [];
-  const write = (event: unknown) => {
-    const text = JSON.stringify(event);
-    if (open) socket.send(text);
-    else if (queue.length < 200) queue.push(text);
+  const queue: Buffer[] = [];
+  const write = (frame: Buffer) => {
+    if (open) socket.send(frame);
+    else if (queue.length < 200) queue.push(frame);
   };
   socket.on("open", (() => {
     open = true;
-    for (const text of queue.splice(0)) socket.send(text);
+    for (const frame of queue.splice(0)) socket.send(frame);
   }) as never);
   socket.on("close", (() =>
     handlers.onClose("The KVM closed the connection")) as never);
@@ -198,33 +225,16 @@ async function screen(
     input(event) {
       switch (event.t) {
         case "key":
-          write({
-            event_type: "key",
-            event: { key: event.code, state: event.down },
-          });
+          write(hidFrame(1, event.down, event.code));
           break;
         case "move":
-          write({
-            event_type: "mouse_move",
-            event: {
-              to: {
-                x: Math.round(Math.min(1, Math.max(0, event.x)) * ABS - 32768),
-                y: Math.round(Math.min(1, Math.max(0, event.y)) * ABS - 32768),
-              },
-            },
-          });
+          write(moveFrame(event.x, event.y));
           break;
         case "button":
-          write({
-            event_type: "mouse_button",
-            event: { button: BUTTON[event.button], state: event.down },
-          });
+          write(hidFrame(2, event.down, BUTTON[event.button]));
           break;
         case "wheel":
-          write({
-            event_type: "mouse_wheel",
-            event: { delta: { x: 0, y: event.dy > 0 ? -1 : 1 } },
-          });
+          write(Buffer.from([5, 0, 0, event.dy > 0 ? 0xff : 1]));
           break;
         case "text":
           void call(target, io, "/api/hid/print?limit=0", {

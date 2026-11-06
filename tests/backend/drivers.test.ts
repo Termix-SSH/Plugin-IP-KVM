@@ -164,7 +164,17 @@ describe("pikvm", () => {
       case "/api/msd/set_connected":
       case "/api/msd/set_params":
       case "/api/hid/print":
+      case "/api/hid/set_params":
         return json({ result: {} });
+      case "/api/hid":
+        return json({
+          result: {
+            mouse: {
+              absolute: false,
+              outputs: { active: "usb_rel", available: ["usb", "usb_rel"] },
+            },
+          },
+        });
       case "/api/msd":
         return json({
           result: {
@@ -255,13 +265,18 @@ describe("pikvm", () => {
     socket.emit("open");
     session.input({ t: "button", button: 0, down: true });
     session.input({ t: "move", x: 0, y: 1 });
-    const sent = socket.sent.map((item) => JSON.parse(String(item)));
-    expect(sent[0]).toEqual({
-      event_type: "key",
-      event: { key: "KeyA", state: true },
-    });
-    expect(sent[1].event).toEqual({ button: "left", state: true });
-    expect(sent[2].event.to).toEqual({ x: -32768, y: 32767 });
+    session.input({ t: "wheel", dy: 10 });
+    const sent = socket.sent.map((item) => Buffer.from(item as Buffer));
+    expect(sent[0]).toEqual(Buffer.from("KeyA", "ascii"));
+    expect(sent[1]).toEqual(Buffer.from("left", "ascii"));
+    expect(sent[2]).toEqual(Buffer.from([3, 0x80, 0x00, 0x7f, 0xff]));
+    expect(sent[3]).toEqual(Buffer.from([5, 0, 0, 0xff]));
+    // kvmd drops absolute moves in relative mode, so the screen switches it
+    await vi.waitFor(() =>
+      expect(fetch.calls.map((call) => new URL(call.url).search)).toContain(
+        "?mouse_output=usb",
+      ),
+    );
     session.close();
     expect(socket.closed).toBe(true);
   });
