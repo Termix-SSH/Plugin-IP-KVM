@@ -4,7 +4,7 @@
 
 <h1>IP-KVM</h1>
 
-<p>See and control machines through IP-KVM devices</p>
+<p>See and control machines through PiKVM, NanoKVM and JetKVM devices</p>
 
 </div>
 
@@ -20,7 +20,7 @@ Read the [docs](https://docs.termix.site/plugins/ip-kvm) to set it up and use it
 
 ## Features
 
-- PiKVM, NanoKVM (and GL.iNet Comet) and JetKVM
+- PiKVM, GL.iNet Comet (GLKVM), NanoKVM and JetKVM
 - Screen, keyboard and mouse in the browser, through the Termix server
 - Power on, shut down, power off and reset
 - Mount ISO images as a CD or USB drive
@@ -28,6 +28,7 @@ Read the [docs](https://docs.termix.site/plugins/ip-kvm) to set it up and use it
 - Wake-on-LAN, offline alerts and the ip-kvm.power service
 - Link a KVM to a Termix host
 - Logins are stored encrypted and never shown again
+- A dashboard card and Termix actions for power
 
 <br />
 

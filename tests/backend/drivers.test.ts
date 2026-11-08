@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { createKeyboard } from "../../src/shared/hid.js";
 import { createMjpegParser } from "../../src/backend/drivers/mjpeg.js";
-import { pikvm } from "../../src/backend/drivers/pikvm.js";
+import { glkvm, pikvm } from "../../src/backend/drivers/pikvm.js";
+import { normalizePin, PIN } from "../../src/backend/pinned.js";
 import { encryptPassword, nanokvm } from "../../src/backend/drivers/nanokvm.js";
 import { jetkvm, relaySession } from "../../src/backend/drivers/jetkvm.js";
 import type {
@@ -163,7 +164,17 @@ describe("pikvm", () => {
       case "/api/msd/set_connected":
       case "/api/msd/set_params":
       case "/api/hid/print":
+      case "/api/hid/set_params":
         return json({ result: {} });
+      case "/api/hid":
+        return json({
+          result: {
+            mouse: {
+              absolute: false,
+              outputs: { active: "usb_rel", available: ["usb", "usb_rel"] },
+            },
+          },
+        });
       case "/api/msd":
         return json({
           result: {
@@ -254,13 +265,18 @@ describe("pikvm", () => {
     socket.emit("open");
     session.input({ t: "button", button: 0, down: true });
     session.input({ t: "move", x: 0, y: 1 });
-    const sent = socket.sent.map((item) => JSON.parse(String(item)));
-    expect(sent[0]).toEqual({
-      event_type: "key",
-      event: { key: "KeyA", state: true },
-    });
-    expect(sent[1].event).toEqual({ button: "left", state: true });
-    expect(sent[2].event.to).toEqual({ x: -32768, y: 32767 });
+    session.input({ t: "wheel", dy: 10 });
+    const sent = socket.sent.map((item) => Buffer.from(item as Buffer));
+    expect(sent[0]).toEqual(Buffer.from("KeyA", "ascii"));
+    expect(sent[1]).toEqual(Buffer.from("left", "ascii"));
+    expect(sent[2]).toEqual(Buffer.from([3, 0x80, 0x00, 0x7f, 0xff]));
+    expect(sent[3]).toEqual(Buffer.from([5, 0, 0, 0xff]));
+    // kvmd drops absolute moves in relative mode, so the screen switches it
+    await vi.waitFor(() =>
+      expect(fetch.calls.map((call) => new URL(call.url).search)).toContain(
+        "?mouse_output=usb",
+      ),
+    );
     session.close();
     expect(socket.closed).toBe(true);
   });
@@ -372,5 +388,91 @@ describe("jetkvm", () => {
         io,
       ),
     ).rejects.toThrow(/not been set up/);
+  });
+});
+
+describe("glkvm", () => {
+  const pin = Array.from({ length: 32 }, () => "AB").join(":");
+
+  it("asks only for the password and logs in as admin", async () => {
+    expect(glkvm.info.fields.map((field) => field.key)).toEqual(["password"]);
+    const seen: Array<Record<string, string> | undefined> = [];
+    const io: DriverIo = {
+      fetch: fakeFetch((url, init) => {
+        seen.push(init.headers);
+        return url.pathname === "/api/info"
+          ? json({ result: { hw: { platform: { model: "rm1" } } } })
+          : json({ result: {} });
+      }) as never,
+      connect: () => new FakeSocket(),
+    };
+    const reading = await glkvm.read(
+      target({ credentials: { password: "secret" } }),
+      io,
+    );
+    expect(reading.model).toBe("rm1");
+    expect(seen[0]?.["x-kvmd-user"]).toBe("admin");
+    expect(seen[0]?.["x-kvmd-passwd"]).toBe("secret");
+  });
+
+  it("goes through the pinned fetch when a certificate is pinned", async () => {
+    const fetch = vi.fn();
+    const fetchPinned = vi.fn(async (url: string, _pin: string) =>
+      new URL(url).pathname === "/api/info"
+        ? Response.json({ result: { hw: { platform: { model: "rm1" } } } })
+        : Response.json({ result: {} }),
+    );
+    await glkvm.read(target({ options: { pin } }), {
+      fetch: fetch as never,
+      fetchPinned,
+      connect: () => new FakeSocket(),
+    });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(fetchPinned.mock.calls[0][1]).toBe(pin);
+  });
+
+  it("reports power as unknown without an ATX board", async () => {
+    const reading = await glkvm.read(
+      target({ credentials: { password: "x" } }),
+      {
+        fetch: fakeFetch((url) =>
+          url.pathname === "/api/atx"
+            ? json({ result: { enabled: false, leds: { power: false } } })
+            : json({ result: {} }),
+        ) as never,
+        connect: () => new FakeSocket(),
+      },
+    );
+    expect(reading.power).toBe("unknown");
+  });
+
+  it("takes a snapshot once the streamer starts", async () => {
+    let calls = 0;
+    const sockets: FakeSocket[] = [];
+    const jpeg = await glkvm.snapshot!(
+      target({ credentials: { password: "x" } }),
+      {
+        fetch: fakeFetch((url) => {
+          if (url.pathname !== "/streamer/snapshot") return status(404);
+          calls += 1;
+          return calls === 1
+            ? status(502)
+            : new Response(new Uint8Array(JPEG_A), { status: 200 });
+        }) as never,
+        connect: () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+      },
+    );
+    expect(Buffer.compare(jpeg, JPEG_A)).toBe(0);
+    expect(calls).toBe(2);
+    expect(sockets[0].closed).toBe(true);
+  });
+
+  it("checks pins", () => {
+    expect(PIN.test(normalizePin(pin.toLowerCase()))).toBe(true);
+    expect(PIN.test("AB:CD")).toBe(false);
   });
 });
