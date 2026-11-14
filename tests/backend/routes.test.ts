@@ -1,7 +1,7 @@
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import express, { type Router } from "express";
 import {
   createMockCtx,
@@ -13,6 +13,12 @@ import type { PluginManifest } from "@termix-ssh/plugin-sdk/manifest";
 import manifestJson from "../../manifest.json";
 import { activate } from "../../src/backend/index.js";
 import { fakeFetch, json, status } from "./fake-fetch.js";
+
+// Video streams skip ctx.fetch; send them to the same fake device here.
+vi.mock("../../src/backend/pinned.js", async (original) => ({
+  ...(await original<typeof import("../../src/backend/pinned.js")>()),
+  streamFetch: (url: string, init: unknown) => router(url, init as never),
+}));
 
 const pluginDir = fileURLToPath(new URL("../..", import.meta.url));
 const manifest = manifestJson as unknown as PluginManifest;
@@ -78,6 +84,7 @@ async function setup(permissions: string[]) {
   }
   let routes: Router | null = null;
   mock = createMockCtx({
+    sandbox: true,
     pluginId: manifest.id,
     manifest,
     capabilities: manifest.capabilities,

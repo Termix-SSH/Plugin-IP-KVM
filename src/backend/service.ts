@@ -7,6 +7,7 @@ import {
   PinnedAgent,
   pinnedFetch,
   readCertificate,
+  streamFetch,
   type PeerCertificate,
 } from "./pinned.js";
 import type { PluginContext } from "@termix-ssh/plugin-sdk/backend";
@@ -123,6 +124,7 @@ function defaultIo(ctx: PluginContext): DriverIo {
   return {
     fetch: ctx.fetch,
     fetchPinned: pinnedFetch,
+    fetchStream: streamFetch,
     connect: (url, options) =>
       new WebSocket(url, {
         headers: options.headers,
