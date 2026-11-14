@@ -22,7 +22,7 @@
   "devDependencies": {
     "@commitlint/cli": "^21.2.2",
     "@commitlint/config-conventional": "^21.2.0",
-    "@termix-ssh/plugin-sdk": "^2.2.1",
+    "@termix-ssh/plugin-sdk": "^2.5.0",
     "@testing-library/dom": "^10.4.2",
     "@testing-library/react": "^16.3.3",
     "@types/better-sqlite3": "^9.6.0",
@@ -30,6 +30,7 @@
     "@types/node": "^26.2.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
+    "@types/ws": "^8.18.1",
     "better-sqlite3": "^13.0.3",
     "husky": "^9.1.7",
     "i18next": "^26.4.2",
@@ -39,8 +40,7 @@
     "react-i18next": "^17.0.16",
     "sonner": "^2.0.8",
     "typescript": "~6.0.3",
-    "vitest": "^4.1.11",
-    "@types/ws": "^8.18.1"
+    "vitest": "^4.1.11"
   },
   "peerDependencies": {
     "@termix-ssh/plugin-sdk": "^2.2.1",
