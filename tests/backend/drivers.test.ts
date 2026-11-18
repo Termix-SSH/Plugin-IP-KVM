@@ -56,8 +56,10 @@ class FakeSocket implements DeviceSocket {
     this.listeners.set(event, [...(this.listeners.get(event) ?? []), listener]);
     return this;
   }
-  emit(event: string) {
-    for (const listener of this.listeners.get(event) ?? []) listener();
+  emit(event: string, ...args: unknown[]) {
+    for (const listener of this.listeners.get(event) ?? []) {
+      (listener as (...a: unknown[]) => void)(...args);
+    }
   }
 }
 
@@ -349,32 +351,112 @@ describe("nanokvm", () => {
 });
 
 describe("jetkvm", () => {
-  it("reads the status and relays an offer with the login cookie", async () => {
+  const jet = (address: string) =>
+    target({ address, port: 80, credentials: { password: "pw" } });
+  const login = (url: URL) =>
+    url.pathname === "/auth/login-local"
+      ? json({}, { "set-cookie": "authToken=abc; Path=/; HttpOnly" })
+      : url.pathname === "/device/status"
+        ? json({ isSetup: true })
+        : status(404);
+
+  it("signals over the socket and passes on the JetKVM's candidates", async () => {
+    vi.useFakeTimers();
+    try {
+      const socket = new FakeSocket();
+      let opened: { url: string; headers?: Record<string, string> } | null =
+        null;
+      const io: DriverIo = {
+        fetch: fakeFetch(login) as never,
+        connect: (url, options) => {
+          opened = { url, headers: options.headers };
+          return socket;
+        },
+      };
+      const device = jet("10.0.0.63");
+      const pending = relaySession(device, io, "OFFER");
+      await vi.waitFor(() => expect(opened).not.toBeNull());
+      expect(opened).toEqual({
+        url: "ws://10.0.0.63:80/webrtc/signaling/client",
+        headers: { cookie: "authToken=abc" },
+      });
+      socket.emit("open");
+      expect(JSON.parse(String(socket.sent[0]))).toEqual({
+        type: "offer",
+        data: { sd: "OFFER" },
+      });
+      const send = (message: unknown) =>
+        socket.emit("message", Buffer.from(JSON.stringify(message)));
+      send({ type: "device-metadata", data: { deviceVersion: "0.5.10" } });
+      send({ type: "new-ice-candidate", data: { candidate: "c1" } });
+      send({ type: "answer", data: "ANSWER" });
+      send({ type: "new-ice-candidate", data: { candidate: "c2" } });
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(await pending).toEqual({
+        sd: "ANSWER",
+        candidates: [{ candidate: "c1" }, { candidate: "c2" }],
+      });
+      expect(socket.closed).toBe(true);
+      expect((await jetkvm.read(device, io)).version).toBe("0.5.10");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("falls back to the old session request on older firmware", async () => {
     const fetch = fakeFetch((url, init) => {
-      switch (url.pathname) {
-        case "/device/status":
-          return json({ isSetup: true });
-        case "/auth/login-local":
-          return json({}, { "set-cookie": "authToken=abc; Path=/; HttpOnly" });
-        case "/webrtc/session":
-          expect(init.headers?.cookie).toBe("authToken=abc");
-          expect(JSON.parse(init.body)).toEqual({ sd: "OFFER" });
-          return json({ sd: "ANSWER" });
-        default:
-          return status(404);
+      if (url.pathname === "/webrtc/session") {
+        expect(init.headers?.cookie).toBe("authToken=abc");
+        expect(JSON.parse(init.body)).toEqual({ sd: "OFFER" });
+        return json({ sd: "ANSWER" });
       }
+      return login(url);
     });
     const io: DriverIo = {
       fetch: fetch as never,
-      connect: () => new FakeSocket(),
+      connect: () => {
+        const socket = new FakeSocket();
+        setTimeout(() =>
+          socket.emit("error", new Error("Unexpected server response: 404")),
+        );
+        return socket;
+      },
     };
-    const jet = target({
-      address: "10.0.0.63",
-      port: 80,
-      credentials: { password: "pw" },
+    const device = jet("10.0.0.65");
+    expect((await jetkvm.read(device, io)).model).toBe("JetKVM");
+    expect(await relaySession(device, io, "OFFER")).toEqual({
+      sd: "ANSWER",
+      candidates: [],
     });
-    expect((await jetkvm.read(jet, io)).model).toBe("JetKVM");
-    expect(await relaySession(jet, io, "OFFER")).toBe("ANSWER");
+  });
+
+  it("logs in again when the socket refuses an old cookie", async () => {
+    let logins = 0;
+    const io: DriverIo = {
+      fetch: fakeFetch((url) => {
+        if (url.pathname === "/auth/login-local") logins++;
+        return login(url);
+      }) as never,
+      connect: () => {
+        const socket = new FakeSocket();
+        const first = logins === 1;
+        setTimeout(() => {
+          if (first) {
+            socket.emit("error", new Error("Unexpected server response: 401"));
+            return;
+          }
+          socket.emit("open");
+          socket.emit("message", JSON.stringify({ type: "answer", data: "A" }));
+          socket.emit("close");
+        });
+        return socket;
+      },
+    };
+    expect(await relaySession(jet("10.0.0.66"), io, "OFFER")).toEqual({
+      sd: "A",
+      candidates: [],
+    });
+    expect(logins).toBe(2);
   });
 
   it("reports a JetKVM that is not set up", async () => {

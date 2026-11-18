@@ -7,8 +7,10 @@ import {
   PinnedAgent,
   pinnedFetch,
   readCertificate,
+  streamFetch,
   type PeerCertificate,
 } from "./pinned.js";
+import { keepAwake } from "./keep-awake.js";
 import type { PluginContext } from "@termix-ssh/plugin-sdk/backend";
 import type {
   Device,
@@ -28,7 +30,7 @@ import {
   type ScreenSession,
   type Target,
 } from "./drivers/index.js";
-import { relaySession } from "./drivers/jetkvm.js";
+import { relaySession, type RelayAnswer } from "./drivers/jetkvm.js";
 
 const PERSIST_EVERY_MS = 5 * 60_000;
 const DOWN_AFTER_FAILURES = 2;
@@ -102,7 +104,7 @@ export interface Service {
   wake: (id: number) => Promise<void>;
   openScreen: (id: number, handlers: ScreenHandlers) => Promise<ScreenSession>;
   /** The JetKVM answer to a browser's WebRTC offer. */
-  relay: (id: number, offer: string) => Promise<string>;
+  relay: (id: number, offer: string) => Promise<RelayAnswer>;
   mediaList: (id: number) => Promise<MediaState>;
   mediaMount: (id: number, imageId: string, cdrom: boolean) => Promise<void>;
   mediaEject: (id: number) => Promise<void>;
@@ -123,6 +125,7 @@ function defaultIo(ctx: PluginContext): DriverIo {
   return {
     fetch: ctx.fetch,
     fetchPinned: pinnedFetch,
+    fetchStream: streamFetch,
     connect: (url, options) =>
       new WebSocket(url, {
         headers: options.headers,
@@ -587,7 +590,10 @@ export function createService(
 
     async runDue() {
       const now = Date.now();
-      const due = (await rows()).filter((item) => {
+      const all = await rows();
+      // No devices: nothing keeps the process running.
+      keepAwake(ctx, "poll", all.length > 0);
+      const due = all.filter((item) => {
         const state = stateOf(item);
         return (
           !state.polling && now - state.lastPolled >= item.pollSeconds * 1000
